@@ -2,6 +2,8 @@ package com.example.ui
 
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -60,7 +62,15 @@ import kotlinx.coroutines.delay
 class WarningActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
+        // Render this activity on top of other apps so the warning is visible
+        // even when the user is using a different app.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
+            @Suppress("DEPRECATION")
+            window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+            Log.d("WarningActivity", "Window type set to TYPE_APPLICATION_OVERLAY")
+        }
+
         // Ensure the activity displays above the keyguard lock screen and wakes screen
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
