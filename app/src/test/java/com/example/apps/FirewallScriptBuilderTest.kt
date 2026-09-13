@@ -114,8 +114,7 @@ class FirewallScriptBuilderTest {
         } else {
             ""
         }
-        return """
-#!/bin/sh
+        return """#!/bin/sh
 echo "${'$'}*" >> "${'$'}FAKE_LOG"
 state="${'$'}$stateFileName"
 case "${'$'}*" in
@@ -143,7 +142,7 @@ esac
     }
 
     private fun isWindows(): Boolean {
-        return System.getProperty("os.name").lowercase().contains("win")
+        return System.getProperty("os.name").orEmpty().lowercase().contains("win")
     }
 
     private data class ScriptResult(
