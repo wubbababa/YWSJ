@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -83,6 +85,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.example.apps.LauncherActivity
+import com.example.apps.NetworkWhitelistActivity
 import com.example.data.AppDatabase
 import com.example.data.SessionRepository
 import com.example.data.UsageSession
@@ -272,7 +276,21 @@ fun MainScreen(viewModel: MainViewModel) {
                 )
             }
 
-            // 5. Permission Alert Card (Only displays when missing crucial permissions)
+            // 5. Home launcher sorting and network whitelist controls
+            item {
+                AppControlPanel(
+                    onOpenLauncher = {
+                        context.startActivity(Intent(context, LauncherActivity::class.java))
+                    },
+                    onOpenWhitelist = {
+                        context.startActivity(
+                            Intent(context, NetworkWhitelistActivity::class.java)
+                        )
+                    }
+                )
+            }
+
+            // 6. Permission Alert Card (Only displays when missing crucial permissions)
             if (!hasNotificationPermission || !hasOverlayPermission || !hasFullScreenPermission) {
                 item {
                     MinimalPermissionCard(
@@ -309,7 +327,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 }
             }
 
-            // 6. Stats Grid Block (Extracted from 2-column design template)
+            // 7. Stats Grid Block (Extracted from 2-column design template)
             item {
                 MinimalStatsGrid(
                     totalWarnings = stats.totalWarnings,
@@ -318,7 +336,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 )
             }
 
-            // 7. History Section Title
+            // 8. History Section Title
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -340,7 +358,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 }
             }
 
-            // 8. Historical items
+            // 9. Historical items
             if (history.isEmpty()) {
                 item {
                     Box(
@@ -621,6 +639,71 @@ fun MinimalDelaySelector(
                         lineHeight = 14.sp
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppControlPanel(
+    onOpenLauncher: () -> Unit,
+    onOpenWhitelist: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Apps,
+                contentDescription = null,
+                tint = MinimalTextMuted,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "应用控制",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = MinimalTextMuted,
+                letterSpacing = 0.5.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = onOpenLauncher,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MinimalPurplePrimary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Apps,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.size(6.dp))
+                Text("应用桌面")
+            }
+            Button(
+                onClick = onOpenWhitelist,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MinimalBlueDark
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Wifi,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.size(6.dp))
+                Text("联网白名单")
             }
         }
     }
