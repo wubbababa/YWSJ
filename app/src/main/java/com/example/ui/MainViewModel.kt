@@ -53,6 +53,10 @@ class MainViewModel(
         initialValue = StatsData()
     )
 
+    init {
+        DetoxService.restoreSelectedDelaySeconds(application)
+    }
+
     fun toggleService() {
         val context = application.applicationContext
         if (isServiceRunning.value) {
@@ -85,7 +89,7 @@ class MainViewModel(
             }
         } else {
             // Just update UI configuration
-            DetoxService.selectedDelaySeconds.value = seconds
+            DetoxService.persistSelectedDelaySeconds(context, seconds)
         }
     }
 
@@ -106,7 +110,7 @@ class MainViewModel(
         }
 
         val totalUnlocks = todaySessions.size
-        val totalWarnings = todaySessions.count { it.warned }
+        val totalWarnings = todaySessions.sumOf { it.warningCount }
 
         // Compute average session duration (excluding incomplete ones)
         val completedSessions = todaySessions.filter { it.lockTime > 0 }

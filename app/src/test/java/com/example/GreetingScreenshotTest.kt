@@ -1,10 +1,10 @@
 package com.example
 
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
 import com.example.ui.theme.MyApplicationTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
-import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,9 +20,19 @@ class GreetingScreenshotTest {
   @get:Rule val composeTestRule = createComposeRule()
 
   @Test
-  fun greeting_screenshot() {
-    composeTestRule.setContent { MyApplicationTheme { Greeting("Robolectric") } }
+  fun stats_areDisplayed() {
+    composeTestRule.setContent {
+      MyApplicationTheme {
+        MinimalStatsGrid(
+          totalWarnings = 2,
+          avgDuration = "1分钟",
+          totalUnlocks = 3
+        )
+      }
+    }
 
-    composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
+    composeTestRule.onNodeWithText("2").assertIsDisplayed()
+    composeTestRule.onNodeWithText("1分钟").assertIsDisplayed()
+    composeTestRule.onNodeWithText("3 次").assertIsDisplayed()
   }
 }

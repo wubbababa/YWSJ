@@ -38,7 +38,10 @@ class DetoxService : Service() {
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+    private val persistenceJob = SupervisorJob()
+    private val persistenceScope = CoroutineScope(persistenceJob + Dispatchers.IO)
     private var timerJob: Job? = null
+    private var isSessionStoreReady = false
 
     private lateinit var repository: SessionRepository
     private var currentSessionId: Long = 0L
@@ -55,6 +58,8 @@ class DetoxService : Service() {
         private const val WARNING_CHANNEL_ID = "detox_warning_channel"
         private const val NOTIFICATION_ID = 8888
         private const val WARNING_NOTIFICATION_ID = 9999
+        private const val PREFERENCES_NAME = "detox_settings"
+        private const val KEY_DELAY_SECONDS = "delay_seconds"
 
         // Live status flows for real-time UI synchronization
         val isServiceRunning = MutableStateFlow(false)
@@ -62,6 +67,29 @@ class DetoxService : Service() {
         val selectedDelaySeconds = MutableStateFlow(60) // customizable (default 60s)
         val activeSessionSeconds = MutableStateFlow(0L) // active session duration
         val isScreenInteractive = MutableStateFlow(true)
+
+        fun restoreSelectedDelaySeconds(context: Context) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE
+            )
+            val savedDelay = preferences.getInt(
+                KEY_DELAY_SECONDS,
+                selectedDelaySeconds.value
+            )
+            if (savedDelay > 0) {
+                selectedDelaySeconds.value = savedDelay
+            }
+        }
+
+        fun persistSelectedDelaySeconds(context: Context, seconds: Int) {
+            if (seconds <= 0) return
+            selectedDelaySeconds.value = seconds
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_DELAY_SECONDS, seconds)
+                .apply()
+        }
     }
 
     override fun onCreate() {
@@ -69,6 +97,7 @@ class DetoxService : Service() {
         Log.d(TAG, "onCreate service")
         val database = AppDatabase.getDatabase(this)
         repository = SessionRepository(database.usageSessionDao())
+        restoreSelectedDelaySeconds(this)
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.service_running_desc, selectedDelaySeconds.value)))
@@ -87,8 +116,16 @@ class DetoxService : Service() {
         
         isScreenInteractive.value = isScreenOnNow
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        if (isScreenOnNow && !keyguardManager.isKeyguardLocked) {
-            startTrackingSession()
+        serviceScope.launch {
+            try {
+                repository.closeOrphanedSessions(System.currentTimeMillis())
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to close orphaned sessions", e)
+            }
+            isSessionStoreReady = true
+            if (isScreenInteractive.value && !keyguardManager.isKeyguardLocked) {
+                startTrackingSession()
+            }
         }
     }
 
@@ -98,7 +135,7 @@ class DetoxService : Service() {
         intent?.let {
             val newDelay = it.getIntExtra("delay_seconds", -1)
             if (newDelay > 0 && newDelay != selectedDelaySeconds.value) {
-                selectedDelaySeconds.value = newDelay
+                persistSelectedDelaySeconds(this, newDelay)
                 // If counting down, reset countdown to new delay
                 if (timerJob?.isActive == true) {
                     currentCountdown.value = newDelay
@@ -173,6 +210,8 @@ class DetoxService : Service() {
     }
 
     private fun startTrackingSession() {
+        if (!isSessionStoreReady) return
+
         // SCREEN_ON and USER_PRESENT can both arrive for one unlock. Do not
         // restart the timer or insert a second database session.
         if (timerJob?.isActive == true) {
@@ -211,13 +250,11 @@ class DetoxService : Service() {
                     // late insert instead of leaving an orphan active session.
                     val endTime = pendingSessionEndTimes.remove(sessionGeneration)
                         ?: System.currentTimeMillis()
-                    repository.updateSession(
-                        session.copy(
-                            id = insertedSessionId.toInt(),
-                            lockTime = endTime,
-                            durationSeconds =
-                                ((endTime - unlockTime).coerceAtLeast(0L)) / 1_000L
-                        )
+                    repository.closeSession(
+                        id = insertedSessionId.toInt(),
+                        lockTime = endTime,
+                        durationSeconds =
+                            ((endTime - unlockTime).coerceAtLeast(0L)) / 1_000L
                     )
                 }
             } catch (e: Exception) {
@@ -271,23 +308,18 @@ class DetoxService : Service() {
             } else {
                 activeSessionSeconds.value
             }
-            serviceScope.launch(Dispatchers.IO) {
+            val lockTime = System.currentTimeMillis()
+            persistenceScope.launch {
                 try {
-                    val session = repository.getSessionById(sessionId.toInt())
-                    if (session != null) {
-                        val lockTime = System.currentTimeMillis()
-                        val duration = if (activeSeconds > 0) {
-                            activeSeconds
-                        } else {
-                            (lockTime - session.unlockTime) / 1_000L
-                        }
-                        val updated = session.copy(
-                            lockTime = lockTime,
-                            durationSeconds = duration
-                        )
-                        repository.updateSession(updated)
-                        Log.d(TAG, "Updated session $sessionId with duration $duration seconds")
-                    }
+                    repository.closeSession(
+                        id = sessionId.toInt(),
+                        lockTime = lockTime,
+                        durationSeconds = activeSeconds
+                    )
+                    Log.d(
+                        TAG,
+                        "Closed session $sessionId with duration $activeSeconds seconds"
+                    )
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to update session closure", e)
                 }
@@ -302,15 +334,12 @@ class DetoxService : Service() {
     private fun triggerWarning() {
         Log.d(TAG, "Detox Warning Triggered!")
         
-        // 1. Update database record to warned = true
+        // 1. Mark the session as warned and increment its warning count.
         if (currentSessionId != 0L) {
             val sessionId = currentSessionId
-            serviceScope.launch(Dispatchers.IO) {
+            persistenceScope.launch {
                 try {
-                    val session = repository.getSessionById(sessionId.toInt())
-                    if (session != null) {
-                        repository.updateSession(session.copy(warned = true))
-                    }
+                    repository.markSessionWarned(sessionId.toInt())
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to update warning status in DB", e)
                 }

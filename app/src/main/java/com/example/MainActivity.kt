@@ -63,7 +63,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +82,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.example.data.AppDatabase
 import com.example.data.SessionRepository
 import com.example.data.UsageSession
@@ -153,9 +153,10 @@ fun MainScreen(viewModel: MainViewModel) {
         }
     }
 
-    // Refresh permissions on launch and resume
-    LaunchedEffect(Unit) {
+    // Refresh permissions whenever the screen resumes.
+    LifecycleResumeEffect(Unit) {
         checkPermissions()
+        onPauseOrDispose { }
     }
 
     // Notification permission launcher
@@ -258,7 +259,7 @@ fun MainScreen(viewModel: MainViewModel) {
             item {
                 FooterControlBar(
                     isRunning = isRunning,
-                    currentDelayMinutes = selectedDelay / 60,
+                    currentDelaySeconds = selectedDelay,
                     onToggle = { viewModel.toggleService() }
                 )
             }
@@ -494,9 +495,15 @@ fun MinimalMonitorDial(
 @Composable
 fun FooterControlBar(
     isRunning: Boolean,
-    currentDelayMinutes: Int,
+    currentDelaySeconds: Int,
     onToggle: () -> Unit
 ) {
+    val delayText = when {
+        currentDelaySeconds < 60 -> "${currentDelaySeconds}秒"
+        currentDelaySeconds % 60 == 0 -> "${currentDelaySeconds / 60}分钟"
+        else -> "${currentDelaySeconds / 60}分${currentDelaySeconds % 60}秒"
+    }
+
     // Elegant control bar mimicking the specs footer
     Box(
         modifier = Modifier
@@ -514,7 +521,7 @@ fun FooterControlBar(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${currentDelayMinutes}分钟强力提醒",
+                    text = "${delayText}强力提醒",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = MinimalPurpleDark
@@ -946,7 +953,11 @@ fun MinimalHistoryRow(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "已弹警告",
+                        text = if (session.warningCount > 0) {
+                            "已弹 ${session.warningCount} 次"
+                        } else {
+                            "已弹警告"
+                        },
                         color = TomatoRed,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold

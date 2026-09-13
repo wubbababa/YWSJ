@@ -9,16 +9,20 @@ class SessionRepository(private val dao: UsageSessionDao) {
         return dao.insertSession(session)
     }
 
-    suspend fun updateSession(session: UsageSession) {
-        dao.updateSession(session)
+    suspend fun closeSession(id: Int, lockTime: Long, durationSeconds: Long) {
+        dao.closeSession(id, lockTime, durationSeconds)
     }
 
-    suspend fun getLatestSession(): UsageSession? {
-        return dao.getLatestSession()
+    suspend fun markSessionWarned(id: Int) {
+        dao.markSessionWarned(id)
     }
 
-    suspend fun getSessionById(id: Int): UsageSession? {
-        return dao.getSessionById(id)
+    suspend fun closeOrphanedSessions(endTime: Long) {
+        dao.getActiveSessions().forEach { session ->
+            val durationSeconds =
+                ((endTime - session.unlockTime).coerceAtLeast(0L)) / 1_000L
+            dao.closeSession(session.id, endTime, durationSeconds)
+        }
     }
 
     suspend fun deleteAllSessions() {
