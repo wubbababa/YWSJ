@@ -137,7 +137,7 @@ esac
     }
 
     private fun writeExecutable(file: File, content: String) {
-        file.writeText(content)
+        file.writeText(content.replace("\r\n", "\n"))
         assertTrue("Could not make ${file.name} executable", file.setExecutable(true))
     }
 
