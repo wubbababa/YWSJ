@@ -135,7 +135,7 @@ class FirewallManager(private val context: Context) {
 
     private suspend fun runRootScript(script: String, timeoutMillis: Long): FirewallResult {
         return withContext(Dispatchers.IO) {
-            var process: Process? = null
+            var process: java.lang.Process? = null
             try {
                 val runningProcess = ProcessBuilder("su", "-c", script)
                     .redirectErrorStream(true)
