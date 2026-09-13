@@ -16,7 +16,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.Locale
 
 data class LauncherAppInfo(
     val packageName: String,
@@ -77,12 +76,18 @@ class InstalledAppRepository(private val context: Context) {
                     buildLauncherApp(resolveInfo, usageByPackage, store)
                 }
                 .distinctBy { it.packageName }
-                .sortedWith(
-                    compareByDescending<LauncherAppInfo> { it.launchCount }
-                        .thenByDescending { it.usageTimeMillis }
-                        .thenByDescending { it.lastUsedTime }
-                        .thenBy { it.label.lowercase(Locale.getDefault()) }
-                )
+                .sortedWith(Comparator<LauncherAppInfo> { first, second ->
+                    compareLauncherRank(
+                        firstLaunchCount = first.launchCount,
+                        firstUsageTimeMillis = first.usageTimeMillis,
+                        firstLastUsedTime = first.lastUsedTime,
+                        firstLabel = first.label,
+                        secondLaunchCount = second.launchCount,
+                        secondUsageTimeMillis = second.usageTimeMillis,
+                        secondLastUsedTime = second.lastUsedTime,
+                        secondLabel = second.label
+                    )
+                })
                 .toList()
         }
     }
