@@ -124,7 +124,7 @@ class FirewallScriptBuilderTest {
         }
         return """
 $name() {
-  echo "${'$'}*" >> "${'$'}FAKE_LOG"
+  echo "$name ${'$'}*" >> "${'$'}FAKE_LOG"
   state="${'$'}{$stateVariable}"
   case "${'$'}*" in
 $failureCase    *"-C OUTPUT -j DETOX_WHITELIST"*)
