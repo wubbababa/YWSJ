@@ -33,7 +33,11 @@ class FirewallScriptBuilderTest {
             failIp6UidRule = false
         )
 
-        assertEquals(result.output, 0, result.exitCode)
+        assertEquals(
+            "exit=${result.exitCode}\noutput=${result.output}\nlog=${result.log}",
+            0,
+            result.exitCode
+        )
         assertTrue(result.output.contains(FirewallScriptBuilder.FIREWALL_OK_MARKER))
         assertTrue(result.log.contains("--uid-owner 12345 -j RETURN"))
         assertTrue(result.log.contains("--uid-owner 10000-2147483647 -j DROP"))
@@ -62,28 +66,31 @@ class FirewallScriptBuilderTest {
         failIp6UidRule: Boolean
     ): ScriptResult {
         val root = temporaryFolder.newFolder("script-${System.nanoTime()}")
-        val bin = File(root, "bin").apply { mkdirs() }
         val log = File(root, "commands.log")
         val ipv4State = File(root, "ipv4.state")
         val ipv6State = File(root, "ipv6.state")
-        val scriptFile = File(root, "firewall.sh").apply { writeText(script) }
 
-        writeExecutable(File(bin, "id"), "#!/bin/sh\necho 0\n")
-        writeExecutable(
-            File(bin, "iptables"),
-            fakeFirewallCommand(stateFileName = "FAKE_IPTABLES_STATE")
-        )
-        writeExecutable(
-            File(bin, "ip6tables"),
-            fakeFirewallCommand(
-                stateFileName = "FAKE_IP6TABLES_STATE",
-                failUidRule = failIp6UidRule
+        val wrapper = buildString {
+            append("id() { echo 0; }\n")
+            append(
+                fakeFirewallFunction(
+                    name = "iptables",
+                    stateVariable = "FAKE_IPTABLES_STATE",
+                    failUidRule = false
+                )
             )
-        )
+            append(
+                fakeFirewallFunction(
+                    name = "ip6tables",
+                    stateVariable = "FAKE_IP6TABLES_STATE",
+                    failUidRule = failIp6UidRule
+                )
+            )
+            append(script)
+        }.replace("\r\n", "\n")
 
-        val processBuilder = ProcessBuilder("/bin/sh", scriptFile.absolutePath)
-        processBuilder.environment()["PATH"] = bin.absolutePath +
-            File.pathSeparator + System.getenv("PATH").orEmpty()
+        val scriptFile = File(root, "firewall-test.sh").apply { writeText(wrapper) }
+        val processBuilder = ProcessBuilder("/bin/sh", "-x", scriptFile.absolutePath)
         processBuilder.environment()["FAKE_LOG"] = log.absolutePath
         processBuilder.environment()["FAKE_IPTABLES_STATE"] = ipv4State.absolutePath
         processBuilder.environment()["FAKE_IP6TABLES_STATE"] = ipv6State.absolutePath
@@ -95,50 +102,48 @@ class FirewallScriptBuilderTest {
         return ScriptResult(
             exitCode = exitCode,
             output = output,
-            log = log.readText(),
+            log = if (log.exists()) log.readText() else "",
             ipv4State = ipv4State,
             ipv6State = ipv6State
         )
     }
 
-    private fun fakeFirewallCommand(
-        stateFileName: String,
-        failUidRule: Boolean = false
+    private fun fakeFirewallFunction(
+        name: String,
+        stateVariable: String,
+        failUidRule: Boolean
     ): String {
         val failureCase = if (failUidRule) {
             """
-  *"--uid-owner 12345 -j RETURN"*)
-    exit 1
-    ;;
+    *"--uid-owner 12345 -j RETURN"*)
+      return 1
+      ;;
 """
         } else {
             ""
         }
-        return """#!/bin/sh
-echo "${'$'}*" >> "${'$'}FAKE_LOG"
-state="${'$'}$stateFileName"
-case "${'$'}*" in
-$failureCase  *"-C OUTPUT -j DETOX_WHITELIST"*)
-    [ -f "${'$'}state" ] && exit 0 || exit 1
-    ;;
-  *"-I OUTPUT 1 -j DETOX_WHITELIST"*)
-    : > "${'$'}state"
-    exit 0
-    ;;
-  *"-D OUTPUT -j DETOX_WHITELIST"*)
-    rm -f "${'$'}state"
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
+        return """
+$name() {
+  echo "${'$'}*" >> "${'$'}FAKE_LOG"
+  state="${'$'}{$stateVariable}"
+  case "${'$'}*" in
+$failureCase    *"-C OUTPUT -j DETOX_WHITELIST"*)
+      [ -f "${'$'}state" ] && return 0 || return 1
+      ;;
+    *"-I OUTPUT 1 -j DETOX_WHITELIST"*)
+      : > "${'$'}state"
+      return 0
+      ;;
+    *"-D OUTPUT -j DETOX_WHITELIST"*)
+      rm -f "${'$'}state"
+      return 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
 """
-    }
-
-    private fun writeExecutable(file: File, content: String) {
-        file.writeText(content.replace("\r\n", "\n"))
-        assertTrue("Could not make ${file.name} executable", file.setExecutable(true))
     }
 
     private fun isWindows(): Boolean {
