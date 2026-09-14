@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -171,6 +172,13 @@ private fun LauncherScreen() {
                         tint = MinimalPurplePrimary
                     )
                 }
+                IconButton(onClick = { openHomeSettings(context) }) {
+                    Icon(
+                        imageVector = Icons.Default.Home,
+                        contentDescription = "切换桌面",
+                        tint = MinimalPurplePrimary
+                    )
+                }
                 IconButton(onClick = { openDetoxSettings(context) }) {
                     Icon(
                         imageVector = Icons.Default.Settings,
@@ -186,6 +194,8 @@ private fun LauncherScreen() {
                         requestHomeRole(context, homeRoleLauncher)
                     }
                 )
+            } else {
+                SwitchHomeCard(onSwitchHome = { openHomeSettings(context) })
             }
 
             if (!hasUsageAccess) {
@@ -251,6 +261,42 @@ private fun LauncherScreen() {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SwitchHomeCard(onSwitchHome: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        colors = CardDefaults.cardColors(containerColor = MinimalPurpleLight)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "当前默认桌面",
+                    color = MinimalTextMain,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "想换回原来的桌面，可进入系统设置重新选择。",
+                    color = MinimalTextMuted,
+                    fontSize = 12.sp
+                )
+            }
+            Spacer(modifier = Modifier.size(10.dp))
+            Button(onClick = onSwitchHome) {
+                Text("切换桌面")
             }
         }
     }
@@ -385,7 +431,22 @@ private fun requestHomeRole(
             return
         }
     }
-    context.startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+    openHomeSettings(context)
+}
+
+private fun openHomeSettings(context: Context) {
+    val settingsIntent = Intent(Settings.ACTION_HOME_SETTINGS)
+    if (settingsIntent.resolveActivity(context.packageManager) != null) {
+        context.startActivity(settingsIntent)
+        return
+    }
+
+    // Some vendor Android builds do not expose ACTION_HOME_SETTINGS.
+    // Triggering HOME selection still lets the user choose another launcher.
+    val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+        addCategory(Intent.CATEGORY_HOME)
+    }
+    context.startActivity(Intent.createChooser(homeIntent, "选择桌面"))
 }
 
 private fun Context.isDefaultHome(): Boolean {
