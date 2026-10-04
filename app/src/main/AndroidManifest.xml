@@ -52,7 +52,8 @@
             android:exported="false"
             android:theme="@style/Theme.MyApplication"
             android:launchMode="singleTop"
-            android:showOnLockScreen="true"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
             android:turnScreenOn="true" />
 
         <!-- Optional home screen: applications sorted by usage frequency. -->

@@ -10,6 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -19,6 +20,7 @@ import android.os.VibratorManager
 import android.os.VibrationEffect
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
@@ -26,6 +28,7 @@ import com.example.data.AppDatabase
 import com.example.data.SessionRepository
 import com.example.data.UsageSession
 import com.example.ui.WarningActivity
+import com.example.ui.WarningOverlayView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,6 +44,8 @@ class DetoxService : Service() {
     private val persistenceJob = SupervisorJob()
     private val persistenceScope = CoroutineScope(persistenceJob + Dispatchers.IO)
     private var timerJob: Job? = null
+    private var warningOverlayCountdownJob: Job? = null
+    private var warningOverlayView: WarningOverlayView? = null
     private var isSessionStoreReady = false
 
     private lateinit var repository: SessionRepository
@@ -58,6 +63,7 @@ class DetoxService : Service() {
         private const val WARNING_CHANNEL_ID = "detox_warning_channel"
         private const val NOTIFICATION_ID = 8888
         private const val WARNING_NOTIFICATION_ID = 9999
+        private const val WARNING_DISMISS_DELAY_SECONDS = 3
         private const val PREFERENCES_NAME = "detox_settings"
         private const val KEY_DELAY_SECONDS = "delay_seconds"
 
@@ -296,6 +302,10 @@ class DetoxService : Service() {
         timerJob?.cancel()
         timerJob = null
 
+        // The alert belongs to this session; never leave it floating over the
+        // lock screen or over the next app once monitoring stopped.
+        removeWarningOverlay()
+
         if (saveSession && currentSessionId == 0L && sessionStartedAtElapsedRealtime > 0L) {
             pendingSessionEndTimes[currentSessionGeneration] = System.currentTimeMillis()
         }
@@ -349,26 +359,104 @@ class DetoxService : Service() {
         // 2. Play warning vibration
         triggerVibration()
 
-        // 3. Launch Warning Activity!
-        // We do this if overlay permission is granted or directly as fullScreenIntent.
+        // 3. Prefer the overlay window. It is the only alert mechanism Android
+        //    cannot silently refuse: background activity starts are blocked on
+        //    Android 10+ (and by several OEM ROMs) and a full-screen intent is
+        //    degraded to a heads-up notification while the device is unlocked.
+        if (showWarningOverlay()) {
+            Log.d(TAG, "Warning overlay displayed")
+            return
+        }
+
+        // 4. Without overlay permission, try the full-screen activity anyway:
+        //    it still works while our own UI is in the foreground. Then keep the
+        //    high-priority full-screen notification as the safety net, because
+        //    `startActivity` gives no signal when the system blocks it.
         val warningIntent = Intent(this, WarningActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-
-        // Always post the high-priority full-screen notification. It is the reliable
-        // fallback when Android or an OEM blocks background activity launches.
+        launchWarningActivity(warningIntent)
         showHighPriorityWarningNotification(warningIntent)
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
-            // Can draw over other apps -> launch activity directly!
-            Log.d(TAG, "Has overlay permission, launching WarningActivity directly")
-            try {
-                startActivity(warningIntent)
-            } catch (e: Exception) {
-                Log.e(TAG, "Direct warning activity launch failed", e)
-            }
+    private fun launchWarningActivity(warningIntent: Intent) {
+        try {
+            startActivity(warningIntent)
+            Log.d(TAG, "WarningActivity launch requested")
+        } catch (e: Exception) {
+            Log.e(TAG, "Direct warning activity launch failed", e)
+        }
+    }
+
+    /**
+     * Renders the warning in a window we own, on top of every other app.
+     *
+     * @return true when an overlay is on screen, including the case where the
+     *   previous alert is still waiting to be dismissed.
+     */
+    @Suppress("DEPRECATION")
+    private fun showWarningOverlay(): Boolean {
+        if (warningOverlayView != null) return true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        if (!Settings.canDrawOverlays(this)) return false
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return false
+
+        val overlayView = WarningOverlayView(this).apply {
+            onDismiss = { removeWarningOverlay() }
+        }
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
-            Log.d(TAG, "No overlay permission; using fullscreen notification warning")
+            WindowManager.LayoutParams.TYPE_SYSTEM_ALERT
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            windowType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            PixelFormat.TRANSLUCENT
+        )
+
+        return try {
+            windowManager.addView(overlayView, params)
+            warningOverlayView = overlayView
+            startWarningCountdown(overlayView)
+            true
+        } catch (e: Exception) {
+            warningOverlayView = null
+            Log.e(TAG, "Failed to show warning overlay", e)
+            false
+        }
+    }
+
+    private fun startWarningCountdown(overlayView: WarningOverlayView) {
+        warningOverlayCountdownJob?.cancel()
+        warningOverlayCountdownJob = serviceScope.launch {
+            for (remainingSeconds in WARNING_DISMISS_DELAY_SECONDS downTo 1) {
+                overlayView.showCountdown(remainingSeconds)
+                delay(1_000L)
+            }
+            overlayView.showDismissAction()
+        }
+    }
+
+    private fun removeWarningOverlay() {
+        warningOverlayCountdownJob?.cancel()
+        warningOverlayCountdownJob = null
+
+        val overlayView = warningOverlayView ?: return
+        warningOverlayView = null
+        try {
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            windowManager?.removeViewImmediate(overlayView)
+            Log.d(TAG, "Warning overlay removed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove warning overlay", e)
         }
     }
 
