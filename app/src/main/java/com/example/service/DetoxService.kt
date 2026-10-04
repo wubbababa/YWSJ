@@ -276,7 +276,14 @@ class DetoxService : Service() {
                     ((now - sessionStartedAtElapsedRealtime).coerceAtLeast(0L)) / 1_000L
 
                 if (now >= nextWarningAtElapsedRealtime) {
-                    triggerWarning()
+                    // An alert that fails once must never end the schedule: an
+                    // uncaught exception here would cancel this coroutine and
+                    // silently stop every later warning.
+                    try {
+                        triggerWarning()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to raise detox warning", e)
+                    }
 
                     // Stay aligned to real elapsed time from the unlock/configuration
                     // anchor. If Android delayed this coroutine, skip missed slots
@@ -368,6 +375,8 @@ class DetoxService : Service() {
             return
         }
 
+        Log.w(TAG, "Overlay permission missing; falling back to activity/notification")
+
         // 4. Without overlay permission, try the full-screen activity anyway:
         //    it still works while our own UI is in the foreground. Then keep the
         //    high-priority full-screen notification as the safety net, because
@@ -391,12 +400,15 @@ class DetoxService : Service() {
     /**
      * Renders the warning in a window we own, on top of every other app.
      *
-     * @return true when an overlay is on screen, including the case where the
-     *   previous alert is still waiting to be dismissed.
+     * The window is rebuilt on every alert instead of reusing the previous one:
+     * several OEM ROMs hide or drop an overlay without telling the app, and a
+     * cached reference would then silence every later warning.
+     *
+     * @return true when a new overlay is on screen.
      */
     @Suppress("DEPRECATION")
     private fun showWarningOverlay(): Boolean {
-        if (warningOverlayView != null) return true
+        removeWarningOverlay()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
         if (!Settings.canDrawOverlays(this)) return false
 
@@ -497,6 +509,10 @@ class DetoxService : Service() {
             .setDefaults(Notification.DEFAULT_ALL)
             .setAutoCancel(true)
             .setFullScreenIntent(pendingIntent, true)
+            // Every interval re-posts this id; without this the system treats a
+            // repeat as a silent update and the heads-up never alerts again.
+            .setOnlyAlertOnce(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setTimeoutAfter(30_000)
             .build()
 

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -136,6 +137,7 @@ fun MainScreen(viewModel: MainViewModel) {
     var hasNotificationPermission by remember { mutableStateOf(true) }
     var hasOverlayPermission by remember { mutableStateOf(true) }
     var hasFullScreenPermission by remember { mutableStateOf(true) }
+    var hasBatteryExemption by remember { mutableStateOf(true) }
 
     // Helper to refresh permission statuses
     fun checkPermissions() {
@@ -152,6 +154,12 @@ fun MainScreen(viewModel: MainViewModel) {
         hasFullScreenPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             val notificationManager = context.getSystemService(NotificationManager::class.java)
             notificationManager.canUseFullScreenIntent()
+        } else {
+            true
+        }
+        hasBatteryExemption = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = context.getSystemService(PowerManager::class.java)
+            powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
         } else {
             true
         }
@@ -175,6 +183,11 @@ fun MainScreen(viewModel: MainViewModel) {
         checkPermissions()
     }
     val overlaySettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        checkPermissions()
+    }
+    val batterySettingsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
         checkPermissions()
@@ -264,7 +277,25 @@ fun MainScreen(viewModel: MainViewModel) {
                 FooterControlBar(
                     isRunning = isRunning,
                     currentDelaySeconds = selectedDelay,
-                    onToggle = { viewModel.toggleService() }
+                    onToggle = {
+                        val isStarting = !isRunning
+                        viewModel.toggleService()
+                        // Android refuses background activity starts and some
+                        // ROMs refuse hidden overlay windows, so a guard started
+                        // without this permission can only ever alert once. Ask
+                        // for it right away instead of failing quietly later.
+                        if (isStarting &&
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                            !Settings.canDrawOverlays(context)
+                        ) {
+                            overlaySettingsLauncher.launch(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                            )
+                        }
+                    }
                 )
             }
 
@@ -291,12 +322,18 @@ fun MainScreen(viewModel: MainViewModel) {
             }
 
             // 6. Permission Alert Card (Only displays when missing crucial permissions)
-            if (!hasNotificationPermission || !hasOverlayPermission || !hasFullScreenPermission) {
+            if (
+                !hasNotificationPermission ||
+                !hasOverlayPermission ||
+                !hasFullScreenPermission ||
+                !hasBatteryExemption
+            ) {
                 item {
                     MinimalPermissionCard(
                         hasNotification = hasNotificationPermission,
                         hasOverlay = hasOverlayPermission,
                         hasFullScreen = hasFullScreenPermission,
+                        hasBatteryExemption = hasBatteryExemption,
                         onRequestNotification = {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -319,6 +356,25 @@ fun MainScreen(viewModel: MainViewModel) {
                                 )
                                 if (intent.resolveActivity(context.packageManager) != null) {
                                     fullScreenSettingsLauncher.launch(intent)
+                                }
+                            }
+                        },
+                        onRequestBatteryExemption = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                val requestIntent = Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                if (requestIntent.resolveActivity(context.packageManager) != null) {
+                                    batterySettingsLauncher.launch(requestIntent)
+                                } else {
+                                    // Some OEM builds only expose the full battery list.
+                                    val listIntent = Intent(
+                                        Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                                    )
+                                    if (listIntent.resolveActivity(context.packageManager) != null) {
+                                        batterySettingsLauncher.launch(listIntent)
+                                    }
                                 }
                             }
                         },
@@ -842,9 +898,11 @@ fun MinimalPermissionCard(
     hasNotification: Boolean,
     hasOverlay: Boolean,
     hasFullScreen: Boolean,
+    hasBatteryExemption: Boolean,
     onRequestNotification: () -> Unit,
     onRequestOverlay: () -> Unit,
     onRequestFullScreen: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
     onRefresh: () -> Unit
 ) {
     Card(
@@ -907,6 +965,21 @@ fun MinimalPermissionCard(
                 onGrant = onRequestOverlay,
                 tag = "overlay_perm_btn"
             )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Keeps the monitoring process alive: OEM power managers freeze
+                // background apps, which is what makes the warning fire once and
+                // then stop for good.
+                MinimalPermissionRow(
+                    title = "后台运行权限",
+                    desc = "关闭电池优化，避免系统冻结后台监测导致提醒只弹一次。",
+                    isGranted = hasBatteryExemption,
+                    onGrant = onRequestBatteryExemption,
+                    tag = "battery_perm_btn"
+                )
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 Spacer(modifier = Modifier.height(16.dp))
