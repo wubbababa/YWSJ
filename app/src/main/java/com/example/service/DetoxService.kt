@@ -20,6 +20,7 @@ import android.os.VibratorManager
 import android.os.VibrationEffect
 import android.provider.Settings
 import android.util.Log
+import android.view.View
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
@@ -46,6 +47,7 @@ class DetoxService : Service() {
     private var timerJob: Job? = null
     private var warningOverlayCountdownJob: Job? = null
     private var warningOverlayView: WarningOverlayView? = null
+    private var warningOverlayParams: WindowManager.LayoutParams? = null
     private var isSessionStoreReady = false
 
     private lateinit var repository: SessionRepository
@@ -73,6 +75,12 @@ class DetoxService : Service() {
         val selectedDelaySeconds = MutableStateFlow(60) // customizable (default 60s)
         val activeSessionSeconds = MutableStateFlow(0L) // active session duration
         val isScreenInteractive = MutableStateFlow(true)
+
+        // Outcome of the most recent alert attempt. OEM ROMs can silently refuse
+        // to display a background window, so the result is surfaced in the UI
+        // instead of staying invisible in logcat.
+        val lastAlertStatus = MutableStateFlow("尚无提醒记录")
+        val lastAlertAtMillis = MutableStateFlow(0L)
 
         fun restoreSelectedDelaySeconds(context: Context) {
             val preferences = context.getSharedPreferences(
@@ -162,6 +170,10 @@ class DetoxService : Service() {
         isServiceRunning.value = false
         unregisterScreenBroadcastReceiver()
         stopTrackingSession(saveSession = true)
+        // The service is going away, so this window must not outlive it: the
+        // next service instance would otherwise start a second window and leak
+        // the hidden one.
+        removeWarningOverlay()
         serviceJob.cancel()
         super.onDestroy()
     }
@@ -309,9 +321,10 @@ class DetoxService : Service() {
         timerJob?.cancel()
         timerJob = null
 
-        // The alert belongs to this session; never leave it floating over the
-        // lock screen or over the next app once monitoring stopped.
-        removeWarningOverlay()
+        // Hide the alert for this session but keep the window we already own:
+        // once a ROM starts refusing background window adds, re-adding would
+        // silently fail while showing the existing window still works.
+        hideWarningOverlay()
 
         if (saveSession && currentSessionId == 0L && sessionStartedAtElapsedRealtime > 0L) {
             pendingSessionEndTimes[currentSessionGeneration] = System.currentTimeMillis()
@@ -398,24 +411,49 @@ class DetoxService : Service() {
     }
 
     /**
-     * Renders the warning in a window we own, on top of every other app.
+     * Puts the warning in front of the user, in a window this app owns.
      *
-     * The window is rebuilt on every alert instead of reusing the previous one:
-     * several OEM ROMs hide or drop an overlay without telling the app, and a
-     * cached reference would then silence every later warning.
+     * A window that is already attached is reused and only made visible again:
+     * once an OEM ROM starts refusing background window additions it fails
+     * silently (no exception, nothing on screen), while updating a window the
+     * app already owns keeps working. A detached window is replaced.
      *
-     * @return true when a new overlay is on screen.
+     * @return true when the alert is on screen.
      */
     @Suppress("DEPRECATION")
     private fun showWarningOverlay(): Boolean {
-        removeWarningOverlay()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
-        if (!Settings.canDrawOverlays(this)) return false
+        val existingOverlay = warningOverlayView
+        if (existingOverlay != null) {
+            if (existingOverlay.isAttachedToWindow) {
+                existingOverlay.visibility = View.VISIBLE
+                if (setOverlayInteractive(true)) {
+                    startWarningCountdown(existingOverlay)
+                    reportAlert("悬浮窗提醒已弹出（复用窗口）")
+                    return true
+                }
+            }
+            // Either the window was taken away or it could not be made
+            // interactive again: drop it and build a fresh one below.
+            removeWarningOverlay()
+        }
 
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            reportAlert("系统版本过低，已改用全屏通知")
+            return false
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            reportAlert("缺少悬浮窗权限，已改用全屏通知")
+            return false
+        }
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        if (windowManager == null) {
+            reportAlert("无法获取窗口服务，已改用全屏通知")
+            return false
+        }
 
         val overlayView = WarningOverlayView(this).apply {
-            onDismiss = { removeWarningOverlay() }
+            onDismiss = { hideWarningOverlay() }
         }
         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -437,11 +475,52 @@ class DetoxService : Service() {
         return try {
             windowManager.addView(overlayView, params)
             warningOverlayView = overlayView
+            warningOverlayParams = params
             startWarningCountdown(overlayView)
+            reportAlert("悬浮窗提醒已弹出（新窗口）")
             true
         } catch (e: Exception) {
             warningOverlayView = null
+            warningOverlayParams = null
             Log.e(TAG, "Failed to show warning overlay", e)
+            reportAlert("悬浮窗被系统拒绝：${e.message.orEmpty()}")
+            false
+        }
+    }
+
+    /**
+     * Makes the window invisible without giving it up, so the next alert can
+     * simply show it again. While hidden it must not consume touches or keep
+     * the screen awake.
+     *
+     * @return true when the window could be hidden and kept for reuse.
+     */
+    private fun setOverlayInteractive(interactive: Boolean): Boolean {
+        val overlayView = warningOverlayView ?: return false
+        val params = warningOverlayParams ?: return false
+
+        if (interactive) {
+            params.flags = (params.flags or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON) and
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv() and
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            params.flags = (params.flags or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) and
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv() and
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON.inv()
+        }
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            ?: return false
+
+        return try {
+            windowManager.updateViewLayout(overlayView, params)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update the warning overlay window", e)
             false
         }
     }
@@ -457,15 +536,41 @@ class DetoxService : Service() {
         }
     }
 
+    /**
+     * Hides the alert after the user acknowledged it. The window stays attached
+     * so later alerts do not depend on a new background window addition; it is
+     * dropped only when hiding it fails.
+     */
+    private fun hideWarningOverlay() {
+        warningOverlayCountdownJob?.cancel()
+        warningOverlayCountdownJob = null
+
+        val overlayView = warningOverlayView ?: return
+        overlayView.visibility = View.GONE
+        overlayView.showCountdown(WARNING_DISMISS_DELAY_SECONDS)
+        if (!setOverlayInteractive(false)) {
+            removeWarningOverlay()
+        }
+    }
+
+    private fun reportAlert(status: String) {
+        Log.d(TAG, "Alert status: $status")
+        lastAlertStatus.value = status
+        lastAlertAtMillis.value = System.currentTimeMillis()
+    }
+
     private fun removeWarningOverlay() {
         warningOverlayCountdownJob?.cancel()
         warningOverlayCountdownJob = null
 
         val overlayView = warningOverlayView ?: return
         warningOverlayView = null
+        warningOverlayParams = null
         try {
             val windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-            windowManager?.removeViewImmediate(overlayView)
+            if (overlayView.isAttachedToWindow) {
+                windowManager?.removeViewImmediate(overlayView)
+            }
             Log.d(TAG, "Warning overlay removed")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to remove warning overlay", e)

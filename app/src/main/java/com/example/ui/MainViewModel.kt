@@ -35,6 +35,8 @@ class MainViewModel(
     val selectedDelaySeconds: StateFlow<Int> = DetoxService.selectedDelaySeconds
     val activeSessionSeconds: StateFlow<Long> = DetoxService.activeSessionSeconds
     val isScreenInteractive: StateFlow<Boolean> = DetoxService.isScreenInteractive
+    val lastAlertStatus: StateFlow<String> = DetoxService.lastAlertStatus
+    val lastAlertAtMillis: StateFlow<Long> = DetoxService.lastAlertAtMillis
 
     // Collect all database sessions
     val allSessions: StateFlow<List<UsageSession>> = repository.allSessions

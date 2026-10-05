@@ -132,6 +132,8 @@ fun MainScreen(viewModel: MainViewModel) {
     val activeSeconds by viewModel.activeSessionSeconds.collectAsState()
     val stats by viewModel.statsState.collectAsState()
     val history by viewModel.allSessions.collectAsState()
+    val lastAlertStatus by viewModel.lastAlertStatus.collectAsState()
+    val lastAlertAtMillis by viewModel.lastAlertAtMillis.collectAsState()
 
     // Permissions Local State
     var hasNotificationPermission by remember { mutableStateOf(true) }
@@ -270,6 +272,38 @@ fun MainScreen(viewModel: MainViewModel) {
                     totalDelay = selectedDelay,
                     activeSeconds = activeSeconds
                 )
+            }
+
+            // 2b. Result of the most recent alert. OEM ROMs can silently refuse
+            // to display a background window, so the outcome is shown here
+            // instead of being invisible.
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MinimalTileBg)
+                        .padding(14.dp)
+                        .testTag("last_alert_status"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = if (lastAlertAtMillis > 0L) {
+                            "上次提醒：$lastAlertStatus · ${viewModel.formatTimestamp(lastAlertAtMillis)}"
+                        } else {
+                            "上次提醒：暂无记录"
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MinimalTextMain
+                    )
+                    Text(
+                        text = "若「今日提醒次数」在涨却看不到弹窗：请到系统设置里为本应用额外允许『自启动』与『后台弹出界面』，并把省电策略设为『无限制』（小米、华为、OPPO 等机型常见）。",
+                        fontSize = 11.sp,
+                        color = MinimalTextMuted,
+                        lineHeight = 16.sp
+                    )
+                }
             }
 
             // 3. Footer Control Switch Block (Lavender active CTA bar from specifications)
